@@ -7,6 +7,7 @@
 #ifdef WIN32
     #include <winsock2.h>
     //#define SOCKET int
+    typedef int socklen_t;
 #else
     #include <sys/socket.h>
     #include <netinet/in.h>
@@ -49,17 +50,11 @@
 
 #include "config.h"
 /****local functions****/
-static int make_keep_alive1_pkt1(uint8_t *buf, uint8_t cnt);
-static int make_keep_alive1_pkt2(uint8_t *buf, uint8_t *seed,\
-        uint8_t *host_ip, uint8_t cnt);
 
-static int make_keep_alive2_pkt1(uint8_t *buf, uint8_t cnt, uint8_t *flag,\
-        uint8_t *rand, uint8_t *key);
-static int make_keep_alive2_pkt2(uint8_t *buf, uint8_t cnt, uint8_t *flag,\
-        uint8_t *rand, uint8_t *key, uint8_t *host_ip);
+
+static int make_keep_alive2_pkt1(uint8_t *buf, uint8_t cnt, uint8_t *key, uint8_t type, int is_first);
 
 static void gen_ka1_checksum(uint8_t *checksum, uint8_t *seed, uint8_t mode);
-static void gen_ka2_checksum(uint8_t *data, int len, uint8_t *checksum);
 
 //static int32_t drcomCRC32(char *data, int len);
 static void print_as_hex(uint8_t *buf, int len);
@@ -82,17 +77,10 @@ int auth(void)
     int length;                         //packet data length
     /*variavles of packets*/
 
-    /*variables used in keep alive1 paket*/
-    uint8_t seed[4];
-    uint8_t host_ip[4];
-    uint8_t kp1_cnt = 0x01;
-    /*variables used in keep alive1 paket*/
-
     /*variables used in keep alive2 paket*/
     uint8_t kp2_cnt = 0x01;
     uint8_t ka2_key[4] = {0};
-    uint8_t ka2_flag[2] = {0};
-    uint8_t rand_num[2] = {0};
+    int ka2_is_first;
     /*variables used in keep alive2 paket*/
 
     struct sockaddr_in remote_addr;
@@ -142,91 +130,17 @@ int auth(void)
 HEART_BEAT_START:
     fprintf(stdout, "gdut-drcom heart-beat started!\n\n");
     fflush(stdout);
-    kp1_cnt = 1;
+    ka2_is_first = 1;
     kp2_cnt = 0;
     srand((unsigned int)time(NULL));
+
     while (1)
     {
-        retry_cnt = 1;
+        retry_cnt = 0;
+
         while (1)
         {
-            length = make_keep_alive1_pkt1(pkt_data, kp1_cnt);
-            sendto(client_sockfd, pkt_data, length, 0,\
-                (struct sockaddr *) &remote_addr, sizeof(remote_addr));
-            fprintf(stdout, "<==[sended kap1_1 request %d] len = %d\n",\
-                    kp1_cnt, length);
-            fflush(stdout);
-            print_as_hex(pkt_data, length);
-
-            if (retry_cnt > 5)
-            {
-                goto HEART_BEAT_START;
-            }
-            memset(pkt_data, 0x00, 1024);
-            if ((length = recvfrom(client_sockfd, pkt_data, 1024, 0,\
-                (struct sockaddr *) &remote_addr, &sin_size)) == -1)
-            {
-                fprintf(stdout, "recv kap1_1 timeout, retry %d!\n", retry_cnt++);
-                fflush(stdout);
-            }
-            else
-            {
-                break;
-            }
-        }
-        retry_cnt = 0;
-        fprintf(stdout, "==>[recieved kap1_1 response %d] len = %d\n",\
-                kp1_cnt, length);
-        fflush(stdout);
-        print_as_hex(pkt_data,length);
-        memcpy(seed, pkt_data+8, 4);
-        memcpy(host_ip, pkt_data+12, 4);
-//        memcpy(drcom_config.host_ip, pkt_data+12, 4);
-        kp1_cnt++;
-
-        retry_cnt = 1;
-        while (1)
-        {
-            length = make_keep_alive1_pkt2(pkt_data, seed, host_ip, kp1_cnt);
-            sendto(client_sockfd, pkt_data, length, 0,\
-                (struct sockaddr *) &remote_addr, sizeof(remote_addr));
-            fprintf(stdout, "<==[sended kap1_2 request %d] len = %d\n",\
-                    kp1_cnt, length);
-            fflush(stdout);
-            print_as_hex(pkt_data, length);
-            length = 0;
-
-            if (retry_cnt > 5)
-            {
-                goto HEART_BEAT_START;
-            }
-            if ((length = recvfrom(client_sockfd, pkt_data, 1024, 0, \
-                (struct sockaddr *) &remote_addr, &sin_size)) == -1)
-            {
-                fprintf(stdout, "recv kap1_2 timeout, retry %d!\n", retry_cnt++);
-                fflush(stdout);
-            }
-            else
-            {
-                break;
-            }
-        }
-        retry_cnt = 0;
-        fprintf(stdout, "==>[recieved kap1_2 response %d] len = %d\n",\
-                kp1_cnt, length);
-        fflush(stdout);
-        print_as_hex(pkt_data,length);
-        kp1_cnt++;
-
-        retry_cnt = 0;
-        int16_t rand_tmp = rand() % 0x10000;
-        rand_num[0] = rand_tmp / 0x100;
-        rand_num[1] = rand_tmp % 0x100;
-
-        sleep(3);
-        while (1)
-        {
-            length = make_keep_alive2_pkt1(pkt_data, kp2_cnt, ka2_flag, rand_num, ka2_key);
+            length = make_keep_alive2_pkt1(pkt_data, kp2_cnt, ka2_key, kp2_cnt == 0 ? 1 : kp2_cnt, ka2_is_first);
             sendto(client_sockfd, pkt_data, length, 0,\
                 (struct sockaddr *) &remote_addr, sizeof(remote_addr));
             fprintf(stdout, "<==[sended kap2_1 request %d] len = %d\n",\
@@ -249,30 +163,32 @@ HEART_BEAT_START:
             {
                 if (pkt_data[0] == 0x07 && pkt_data[2] == 0x10)
                 {
-                    memcpy(ka2_flag, pkt_data+6, 2);
                     fprintf(stdout, "==>[recieved kap2_1 response %d] len = %d\n",\
                             kp2_cnt, length);
                     fflush(stdout);
                     print_as_hex(pkt_data, length);
+                    ka2_is_first = 0;
                     kp2_cnt++;
                     continue;
+                } else if (pkt_data[0] == 0x07 && pkt_data[2] == 0x28) {
+                    fprintf(stdout, "==>[recieved kap2_1 response %d] len = %d\n",\
+                    kp2_cnt, length);
+                    fflush(stdout);
+                    print_as_hex(pkt_data,length);
+                    break;
+                } else {
+                    fprintf(stdout, "==>[recieved kap2_1 response %d] unexpected\n", kp2_cnt);
                 }
-                break;
             }
         }
-        fprintf(stdout, "==>[recieved kap2_1 response %d] len = %d\n",\
-                kp2_cnt, length);
-        fflush(stdout);
-        print_as_hex(pkt_data,length);
-        memcpy(ka2_key, pkt_data+16, 4);
-        kp2_cnt++;
 
+        retry_cnt = 1;
         while (1)
         {
-            length = make_keep_alive2_pkt2(pkt_data, kp2_cnt, ka2_flag, rand_num, ka2_key, host_ip);
+            length = make_keep_alive2_pkt1(pkt_data, kp2_cnt, ka2_key, 1, ka2_is_first);
             sendto(client_sockfd, pkt_data, length, 0,\
                 (struct sockaddr *) &remote_addr, sizeof(remote_addr));
-            fprintf(stdout, "<==[sended kap2_2 request %d] len = %d\n", \
+            fprintf(stdout, "<==[sended kap2_2 request %d] len = %d\n",\
                     kp2_cnt, length);
             fflush(stdout);
             print_as_hex(pkt_data, length);
@@ -290,17 +206,114 @@ HEART_BEAT_START:
             }
             else
             {
-                break;
+                if (pkt_data[0] == 0x07)
+                {
+                    fprintf(stdout, "==>[recieved kap2_2 response %d] len = %d\n",\
+                            kp2_cnt, length);
+                    fflush(stdout);
+                    print_as_hex(pkt_data, length);
+                    memcpy(ka2_key, pkt_data+16, 4);
+                    kp2_cnt++;
+                    break;
+                } else {
+                    fprintf(stdout, "==>[recieved kap2_2 response %d] unexpected\n", kp2_cnt);
+                }
             }
         }
-        fprintf(stdout, "==>[recieved kap2_2 response %d] len = %d\n",\
-                kp2_cnt, length);
-        fflush(stdout);
-        print_as_hex(pkt_data,length);
-        kp2_cnt++;
+        
+        retry_cnt = 1;
+        while (1)
+        {
+            length = make_keep_alive2_pkt1(pkt_data, kp2_cnt, ka2_key, 3, ka2_is_first);
+            sendto(client_sockfd, pkt_data, length, 0,\
+                (struct sockaddr *) &remote_addr, sizeof(remote_addr));
+            fprintf(stdout, "<==[sended kap2_3 request %d] len = %d\n",\
+                    kp2_cnt, length);
+            fflush(stdout);
+            print_as_hex(pkt_data, length);
 
+            if (retry_cnt > 5)
+            {
+                goto HEART_BEAT_START;
+            }
+            memset(pkt_data, 0x00, 1024);
+            if ((length = recvfrom(client_sockfd, pkt_data, 1024, 0,\
+                (struct sockaddr *) &remote_addr, &sin_size)) == -1)
+            {
+                fprintf(stdout, "recv kap2_3 timeout, retry %d!\n", retry_cnt++);
+                fflush(stdout);
+            }
+            else
+            {
+                if (pkt_data[0] == 0x07)
+                {
+                    fprintf(stdout, "==>[recieved kap2_3 response %d] len = %d\n",\
+                            kp2_cnt, length);
+                    fflush(stdout);
+                    print_as_hex(pkt_data, length);
+                    memcpy(ka2_key, pkt_data+16, 4);
+                    kp2_cnt++;
+                    break;
+                } else {
+                    fprintf(stdout, "==>[recieved kap2_3 response %d] unexpected\n", kp2_cnt);
+                }
+            }
+        }
+        
 
-        sleep(17);
+        while (1)
+        {
+
+            length = make_keep_alive2_pkt1(pkt_data, kp2_cnt, ka2_key, 1, ka2_is_first);
+            sendto(client_sockfd, pkt_data, length, 0,\
+                (struct sockaddr *) &remote_addr, sizeof(remote_addr));
+            fprintf(stdout, "<==[sended kap2_loop request %d] len = %d\n", \
+                    kp2_cnt, length);
+            fflush(stdout);
+            print_as_hex(pkt_data, length);
+
+            memset(pkt_data, 0x00, 1024);
+            if ((length = recvfrom(client_sockfd, pkt_data, 1024, 0,\
+                (struct sockaddr *) &remote_addr, &sin_size)) == -1)
+            {
+                fprintf(stdout, "recv kap2_loop timeout, retry %d!\n", retry_cnt++);
+                fflush(stdout);
+                continue;
+            } else {
+                fprintf(stdout, "==>[recieved kap2_3 response %d] len = %d\n",\
+                    kp2_cnt, length);
+                fflush(stdout);
+                print_as_hex(pkt_data, length);
+                memcpy(ka2_key, pkt_data+16, 4);
+                kp2_cnt++;
+            }
+LOOP_RETRY:
+            length = make_keep_alive2_pkt1(pkt_data, kp2_cnt, ka2_key, 3, ka2_is_first);
+            sendto(client_sockfd, pkt_data, length, 0,\
+                (struct sockaddr *) &remote_addr, sizeof(remote_addr));
+            fprintf(stdout, "<==[sended kap2_loop request %d] len = %d\n", \
+                    kp2_cnt, length);
+            fflush(stdout);
+            print_as_hex(pkt_data, length);
+
+            memset(pkt_data, 0x00, 1024);
+            if ((length = recvfrom(client_sockfd, pkt_data, 1024, 0,\
+                (struct sockaddr *) &remote_addr, &sin_size)) == -1)
+            {
+                fprintf(stdout, "recv kap2_loop timeout, retry %d!\n", retry_cnt++);
+                fflush(stdout);
+                goto LOOP_RETRY;
+            } else {
+                fprintf(stdout, "==>[recieved kap2_3 response %d] len = %d\n",\
+                    kp2_cnt, length);
+                fflush(stdout);
+                print_as_hex(pkt_data, length);
+                memcpy(ka2_key, pkt_data+16, 4);
+                kp2_cnt++;
+            }
+
+            sleep(10);
+        }
     }
 #ifdef WIN32
     closesocket(client_sockfd);
@@ -319,110 +332,17 @@ static void print_as_hex(uint8_t *buf, int len)
     {
         if (i%16 == 0 && i!=0)
             fprintf(stdout, "\n");
-        fprintf(stdout, "%02hhx ", *(buf+i));
+        fprintf(stdout, "%02x ", *(buf+i));
     }
     fprintf(stdout, "\n\n");
     fflush(stdout);
-}
-
-/* unused*/
-/*
-static int32_t drcomCRC32(char *data, int len)
-{
-    int ret = 0;
-    int i;
-    for (i=0; i<len; i+=4)
-    {
-        ret ^= *(int *)(data+i);
-        ret &= 0xffffffff;
-    }
-    return ret;
-}
-*/
-
-static int make_keep_alive1_pkt1(uint8_t *buf, uint8_t cnt)
-{
-    buf[0] = 0x07;
-    buf[1] = cnt;
-    buf[2] = 0x08;
-    buf[3] = 0x00;
-    buf[4] = 0x01;
-    buf[5] = 0x00;
-    buf[6] = 0x00;
-    buf[7] = 0x00;
-
-    return 8;
-}
-
-static int make_keep_alive1_pkt2(uint8_t *buf, uint8_t *seed,\
-        uint8_t *host_ip, uint8_t cnt)
-{
-    int index = 0;
-    static int is_first = 1;
-
-    uint8_t check_mode = seed[0] & 0x03;
-#ifdef DEBUG
-    fprintf(stdout, "check mode: %d\n", check_mode);
-    fflush(stdout);
-#endif
-
-    buf[index++] = 0x07;           //code
-    buf[index++] = cnt;            //id
-    buf[index++] = 0x60;           //length
-    buf[index++] = 0x00;           //length
-    buf[index++] = 0x03;           //type
-    buf[index++] = 0x00;           //uid length
-    memcpy(buf+index, "\x00\x00\x00\x00\x00\x00", 6);
-    index += 6;
-    memcpy(buf+index, host_ip, 4);
-    index += 4;
-    if (is_first)
-    {
-        memcpy(buf+index, "\x00\x62\x00", 3);
-        *(buf+index+3) = drcom_config.keep_alive1_flag;
-        is_first = 0;
-    }
-    else
-    {
-        memcpy(buf+index, "\x00\x63\x00", 3);
-        *(buf+index+3) = drcom_config.keep_alive1_flag;
-    }
-    index += 4;
-    memcpy(buf+index, seed, 4);
-    index += 4;
-    /*
-    temp_num = 20000711;
-    memcpy(buf+index, (char *)&temp_num, 4);
-    index += 4;
-    temp_num = 126;
-    memcpy(buf+index, (char *)&temp_num, 4);
-    index += 4;
-    temp_num = (drcomCRC32(buf, index) * 19680126) & 0xffffffff;
-    index -= 8;
-    memcpy(buf+index, (char *)&temp_num, 4);
-    index += 4;
-    memcpy(buf+index, "\x00\x00\x00\x00", 4);
-    index += 4;
-    */
-    uint8_t checksum[8] = {0};
-    gen_ka1_checksum(checksum, seed, check_mode);
-#ifdef DEBUG
-    fprintf(stdout, "checksum: ");
-    fflush(stdout);
-    print_as_hex(checksum, 8);
-#endif
-    memcpy(buf+index, checksum, 8);
-    index += 8;
-
-    memset(buf+index, 0x00, 16*4);
-
-    return index + 16*4;
 }
 
 static void gen_ka1_checksum(uint8_t *checksum, uint8_t *seed, uint8_t mode)
 {
     uint8_t checksum_t[32] = {0};
     int32_t temp_num;
+
     switch (mode)
     {
         case 0:
@@ -473,91 +393,44 @@ static void gen_ka1_checksum(uint8_t *checksum, uint8_t *seed, uint8_t mode)
 }
 
 
-int make_keep_alive2_pkt1(uint8_t *buf, uint8_t cnt, uint8_t *flag,\
-        uint8_t * rand, uint8_t *key)
+int make_keep_alive2_pkt1(uint8_t *buf, uint8_t cnt, uint8_t *seed, uint8_t type, int is_first)
 {
     int index = 0;
     *(buf + index++) = 0x07;
     *(buf + index++) = cnt;
-    *(buf + index++) = 0x28; //length
-    memcpy(buf+index, "\x00\x0b\x01", 3);
-    index += 3;
-
-//    *(buf + index++) = 0xdc;
-//    *(buf + index++) = 0x02;
-    memcpy(buf+index, flag, 2);
+    *(buf + index++) = 0x28; // length
+    memcpy(buf+index, "\x00\x0b", 2);
     index += 2;
-
-    memcpy(buf + index, rand, 2);
-    index += 2;
-
-    memset(buf+index, 0, 6);
-    index += 6;
-
-    memcpy(buf+index, key, 4);
-    index += 4;
-
-    memset(buf+index, 0, 20);
-    index += 20;
-
-    return index;
-}
-
-int make_keep_alive2_pkt2(uint8_t *buf, uint8_t cnt, uint8_t *flag,\
-        uint8_t *rand, uint8_t *key, uint8_t *host_ip)
-{
-    int index = 0;
-    *(buf + index++) = 0x07;
-    *(buf + index++) = cnt;
-    *(buf + index++) = 0x28; //length
-    memcpy(buf+index, "\x00\x0b\x03", 3);
-    index += 3;
-
-    memcpy(buf+index, flag, 2);
-    index += 2;
-
-    memcpy(buf + index, rand, 2);
-    index += 2;
-
-    memset(buf+index, 0, 6);
-    index += 6;
-
-    memcpy(buf+index, key, 4);
-    index += 4;
-
-    memset(buf+index, 0, 4);
-    index += 4;
-
-    //checksum placeholder
-    int checksum_p = index;
-    memset(buf+index, 0, 4);
-    index += 4;
-
-//  gen_ka2_checksum(buf, index, buf+index);
-//  index += 4;
-
-    memcpy(buf+index, host_ip, 4);
-    index += 4;
-
-    memset(buf+index, 0, 8);
-    index +=8;
-
-    gen_ka2_checksum(buf, index, buf+checksum_p);
-
-    return index;
-}
-
-void gen_ka2_checksum(uint8_t *data, int len, uint8_t *checksum)
-{
-    int16_t * p = (int16_t *)data;
-    int i;
-    int32_t checksum_tmp = 0;
-    for (i=0; i<len/2; i++)
-    {
-        checksum_tmp ^= *(p + i);
+    buf[index++] = type;
+    
+    if (is_first) {
+        buf[index++] = 0x0f;
+        buf[index++] = 0x27;
+    } else {
+        buf[index++] = 0xdc;        // keep_alive2_flag
+        buf[index++] = 0x02;
     }
-    checksum_tmp &= 0xffff;
-    checksum_tmp *= 0x2c7;
-    memcpy(checksum, (uint8_t*)&checksum_tmp, 4);
-}
 
+    buf[index++] = 0x2f;
+    buf[index++] = 0x12;
+
+    memset(buf+index, 0, 6);
+    index += 6;
+
+    memcpy(buf+index, seed, 4);      // tail
+    index += 4;
+
+    if (type == 3) {
+        gen_ka1_checksum(buf+index, seed, seed[0] & 0x03);
+        index += 8;
+        memset(buf+index, 0 , 4);   // host_ip
+        index += 4;
+        memset(buf+index, 0 , 8);   // host_ip
+        index += 8;
+    } else {
+        memset(buf+index, 0, 20);
+        index += 20;
+    }
+
+    return index;
+}
