@@ -1,5 +1,5 @@
 #CC:=gcc
-CFLAGS+= -Wall -DDEBUG -DVERSION=\"1.5-4b\"
+CFLAGS+= -Wall -DDEBUG -DVERSION=\"1.6-0\"
 
 objects=gdut-drcom.o config.o auth.o
 

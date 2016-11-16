@@ -3,14 +3,19 @@
 #include <unistd.h>
 #include <stdlib.h>
 #include <stdint.h>
+#include <sys/time.h>
 #include <time.h>
+
 #ifdef WIN32
     #include <winsock2.h>
-    //#define SOCKET int
+    typedef int socklen_t;
+    #define htole32(x) (x)
+    #define le32toh(x) (x)
 #else
     #include <sys/socket.h>
     #include <netinet/in.h>
     #include <arpa/inet.h>
+    #include <endian.h>
     #define SOCKET int
 	#define INVALID_SOCKET -1
 #endif
@@ -61,7 +66,7 @@ static int make_keep_alive2_pkt2(uint8_t *buf, uint8_t cnt, uint8_t *flag,\
 static void gen_ka1_checksum(uint8_t *checksum, uint8_t *seed, uint8_t mode);
 static void gen_ka2_checksum(uint8_t *data, int len, uint8_t *checksum);
 
-//static int32_t drcomCRC32(char *data, int len);
+static uint32_t drcomCRC32(uint8_t *data, int len);
 static void print_as_hex(uint8_t *buf, int len);
 /****local functions****/
 
@@ -325,20 +330,17 @@ static void print_as_hex(uint8_t *buf, int len)
     fflush(stdout);
 }
 
-/* unused*/
-/*
-static int32_t drcomCRC32(char *data, int len)
+static uint32_t drcomCRC32(uint8_t *data, int len)
 {
-    int ret = 0;
+    uint32_t ret = 0;
     int i;
     for (i=0; i<len; i+=4)
     {
-        ret ^= *(int *)(data+i);
+        ret ^= *(uint32_t *)(data+i);
         ret &= 0xffffffff;
     }
     return ret;
 }
-*/
 
 static int make_keep_alive1_pkt1(uint8_t *buf, uint8_t cnt)
 {
@@ -390,20 +392,28 @@ static int make_keep_alive1_pkt2(uint8_t *buf, uint8_t *seed,\
     index += 4;
     memcpy(buf+index, seed, 4);
     index += 4;
-    /*
-    temp_num = 20000711;
-    memcpy(buf+index, (char *)&temp_num, 4);
+
+    if (drcom_config.enable_crypt == 0)
+    {
+    /*disable crypt*/
+    int32_t temp_num;
+    temp_num = htole32(20000711);
+    memcpy(buf+index, (uint8_t*)&temp_num, 4);
     index += 4;
-    temp_num = 126;
-    memcpy(buf+index, (char *)&temp_num, 4);
+    temp_num = htole32(126);
+    memcpy(buf+index, (uint8_t*)&temp_num, 4);
     index += 4;
-    temp_num = (drcomCRC32(buf, index) * 19680126) & 0xffffffff;
+    temp_num = htole32(le32toh(drcomCRC32(buf, index)) * 19680126) & 0xffffffff;
     index -= 8;
-    memcpy(buf+index, (char *)&temp_num, 4);
+    memcpy(buf+index, (uint8_t *)&temp_num, 4);
     index += 4;
     memcpy(buf+index, "\x00\x00\x00\x00", 4);
     index += 4;
-    */
+    /*disable crypt*/
+    }
+    else
+    {
+    /*enable crypt*/
     uint8_t checksum[8] = {0};
     gen_ka1_checksum(checksum, seed, check_mode);
 #ifdef DEBUG
@@ -413,6 +423,8 @@ static int make_keep_alive1_pkt2(uint8_t *buf, uint8_t *seed,\
 #endif
     memcpy(buf+index, checksum, 8);
     index += 8;
+    /*enable crypt*/
+    }
 
     memset(buf+index, 0x00, 16*4);
 
