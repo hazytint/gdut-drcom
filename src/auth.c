@@ -69,7 +69,7 @@ static void gen_ka2_checksum(uint8_t *data, int len, uint8_t *checksum);
 static uint32_t drcomCRC32(uint8_t *data, int len);
 static void print_as_hex(uint8_t *buf, int len);
 /****local functions****/
-
+static int is_first = 1;
 
 int auth(void)
 {
@@ -149,6 +149,7 @@ HEART_BEAT_START:
     fflush(stdout);
     kp1_cnt = 1;
     kp2_cnt = 0;
+    is_first = 1;
     srand((unsigned int)time(NULL));
     while (1)
     {
@@ -186,126 +187,8 @@ HEART_BEAT_START:
         print_as_hex(pkt_data,length);
         memcpy(seed, pkt_data+8, 4);
         memcpy(host_ip, pkt_data+12, 4);
-//        memcpy(drcom_config.host_ip, pkt_data+12, 4);
         kp1_cnt++;
-
-        retry_cnt = 1;
-        while (1)
-        {
-            length = make_keep_alive1_pkt2(pkt_data, seed, host_ip, kp1_cnt);
-            sendto(client_sockfd, pkt_data, length, 0,\
-                (struct sockaddr *) &remote_addr, sizeof(remote_addr));
-            fprintf(stdout, "<==[sended kap1_2 request %d] len = %d\n",\
-                    kp1_cnt, length);
-            fflush(stdout);
-            print_as_hex(pkt_data, length);
-            length = 0;
-
-            if (retry_cnt > 5)
-            {
-                goto HEART_BEAT_START;
-            }
-            if ((length = recvfrom(client_sockfd, pkt_data, 1024, 0, \
-                (struct sockaddr *) &remote_addr, &sin_size)) == -1)
-            {
-                fprintf(stdout, "recv kap1_2 timeout, retry %d!\n", retry_cnt++);
-                fflush(stdout);
-            }
-            else
-            {
-                break;
-            }
-        }
-        retry_cnt = 0;
-        fprintf(stdout, "==>[recieved kap1_2 response %d] len = %d\n",\
-                kp1_cnt, length);
-        fflush(stdout);
-        print_as_hex(pkt_data,length);
-        kp1_cnt++;
-
-        retry_cnt = 0;
-        int16_t rand_tmp = rand() % 0x10000;
-        rand_num[0] = rand_tmp / 0x100;
-        rand_num[1] = rand_tmp % 0x100;
-
-        sleep(3);
-        while (1)
-        {
-            length = make_keep_alive2_pkt1(pkt_data, kp2_cnt, ka2_flag, rand_num, ka2_key);
-            sendto(client_sockfd, pkt_data, length, 0,\
-                (struct sockaddr *) &remote_addr, sizeof(remote_addr));
-            fprintf(stdout, "<==[sended kap2_1 request %d] len = %d\n",\
-                    kp2_cnt, length);
-            fflush(stdout);
-            print_as_hex(pkt_data, length);
-
-            if (retry_cnt > 5)
-            {
-                goto HEART_BEAT_START;
-            }
-            memset(pkt_data, 0x00, 1024);
-            if ((length = recvfrom(client_sockfd, pkt_data, 1024, 0,\
-                (struct sockaddr *) &remote_addr, &sin_size)) == -1)
-            {
-                fprintf(stdout, "recv kap2_1 timeout, retry %d!\n", retry_cnt++);
-                fflush(stdout);
-            }
-            else
-            {
-                if (pkt_data[0] == 0x07 && pkt_data[2] == 0x10)
-                {
-                    memcpy(ka2_flag, pkt_data+6, 2);
-                    fprintf(stdout, "==>[recieved kap2_1 response %d] len = %d\n",\
-                            kp2_cnt, length);
-                    fflush(stdout);
-                    print_as_hex(pkt_data, length);
-                    kp2_cnt++;
-                    continue;
-                }
-                break;
-            }
-        }
-        fprintf(stdout, "==>[recieved kap2_1 response %d] len = %d\n",\
-                kp2_cnt, length);
-        fflush(stdout);
-        print_as_hex(pkt_data,length);
-        memcpy(ka2_key, pkt_data+16, 4);
-        kp2_cnt++;
-
-        while (1)
-        {
-            length = make_keep_alive2_pkt2(pkt_data, kp2_cnt, ka2_flag, rand_num, ka2_key, host_ip);
-            sendto(client_sockfd, pkt_data, length, 0,\
-                (struct sockaddr *) &remote_addr, sizeof(remote_addr));
-            fprintf(stdout, "<==[sended kap2_2 request %d] len = %d\n", \
-                    kp2_cnt, length);
-            fflush(stdout);
-            print_as_hex(pkt_data, length);
-
-            if (retry_cnt > 5)
-            {
-                goto HEART_BEAT_START;
-            }
-            memset(pkt_data, 0x00, 1024);
-            if ((length = recvfrom(client_sockfd, pkt_data, 1024, 0,\
-                (struct sockaddr *) &remote_addr, &sin_size)) == -1)
-            {
-                fprintf(stdout, "recv kap2_2 timeout, retry %d!\n", retry_cnt++);
-                fflush(stdout);
-            }
-            else
-            {
-                break;
-            }
-        }
-        fprintf(stdout, "==>[recieved kap2_2 response %d] len = %d\n",\
-                kp2_cnt, length);
-        fflush(stdout);
-        print_as_hex(pkt_data,length);
-        kp2_cnt++;
-
-
-        sleep(17);
+        sleep(10);
     }
 #ifdef WIN32
     closesocket(client_sockfd);
@@ -360,7 +243,6 @@ static int make_keep_alive1_pkt2(uint8_t *buf, uint8_t *seed,\
         uint8_t *host_ip, uint8_t cnt)
 {
     int index = 0;
-    static int is_first = 1;
 
     uint8_t check_mode = seed[0] & 0x03;
 #ifdef DEBUG
@@ -378,11 +260,11 @@ static int make_keep_alive1_pkt2(uint8_t *buf, uint8_t *seed,\
     index += 6;
     memcpy(buf+index, host_ip, 4);
     index += 4;
-    if (is_first)
+    if (is_first <= 2)
     {
         memcpy(buf+index, "\x00\x62\x00", 3);
         *(buf+index+3) = drcom_config.keep_alive1_flag;
-        is_first = 0;
+        is_first++;
     }
     else
     {
